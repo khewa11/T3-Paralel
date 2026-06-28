@@ -1,0 +1,100 @@
+\documentclass[journal, a4paper]{IEEEtran}
+
+\usepackage[spanish,es-tabla]{babel} % es-tabla para que diga "Tabla" y no "Cuadro"
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{float}
+
+\title{Tarea 3: Procesamiento de Imágenes en CUDA\\ \Large Matriz de Covarianza}
+\author{Benjamín Jimenez,Juan Umaña, Javier Torres\\
+\textit{Ingeniería Civil Informática}\\
+\textit{Universidad de Concepción (UdeC)}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Este informe presenta el cálculo de la matriz de covarianza para el dataset de imágenes DIV2K utilizando procesamiento en GPU. Se compara un enfoque tradicional de cálculo frente a uno asíncrono implementado con CUDA Streams. Este último busca evadir los límites físicos de la VRAM al procesar grandes volúmenes de imágenes aplanadas, demostrando cómo la orquestación asíncrona permite mitigar restricciones de memoria y mejorar la eficiencia general del sistema mediante el solapamiento de copias y cómputo.
+\end{abstract}
+
+\section{Introducción}
+El cálculo de la matriz de covarianza es fundamental en múltiples algoritmos de procesamiento de imágenes y aprendizaje automático, requiriendo operaciones matriciales intensivas. Para un conjunto de imágenes aplanadas, el problema matemático implica inicialmente calcular el vector promedio de las características, seguido del centrado de los datos y, finalmente, la obtención de la matriz de covarianza mediante el producto punto de la matriz de datos centrados por su transpuesta.
+
+A medida que el tamaño o la resolución de las imágenes aumenta, el volumen de datos aplanados crece rápidamente. Esto impone fuertes restricciones de memoria en dispositivos GPU modernos, los cuales poseen una capacidad de Video RAM (VRAM) limitada. En particular, intentar cargar el dataset completo en la memoria del dispositivo suele resultar en errores, haciendo necesario el diseño de estrategias de particionamiento y manejo asíncrono de memoria.
+
+\section{Entorno de Ejecución}
+El desarrollo y experimentación de este proyecto se llevó a cabo en un sistema operativo Linux. La aceleración por hardware se realizó utilizando una unidad de procesamiento gráfico (GPU) NVIDIA GeForce GTX 1650 Ti, la cual cuenta con aproximadamente 3715 MB de VRAM disponible.
+
+% TODO: Detallar la CPU y la memoria RAM del sistema host (ej. Intel Core iX-XXXX, 16GB RAM, etc.).
+\textbf{Especificaciones del Host:}
+\begin{itemize}
+    \item \textbf{CPU:} % TODO: Completar con el modelo de la CPU
+    \item \textbf{Memoria RAM:} % TODO: Completar con la cantidad de RAM
+\end{itemize}
+
+\section{Decisiones de Implementación Algorítmica}
+
+\subsection{Enfoque Tradicional (Experimento 1)}
+En el enfoque tradicional, la ejecución se realiza utilizando el Stream 0 (por defecto) de CUDA. Las transferencias de datos entre el host y el dispositivo operan mediante copias sincrónicas (\texttt{cudaMemcpy}). Para el cálculo de la covarianza se implementó una estrategia de memoria compartida o \textit{Tiling}, la cual mejora los accesos a memoria global al reutilizar bloques de datos dentro de los \textit{Thread Blocks}. 
+
+Sin embargo, debido a que toda la memoria requerida debe reservarse en una sola pasada de forma estática en la VRAM, este enfoque sufre rápidamente de errores de \textit{Out of Memory} (OOM). Específicamente, al intentar escalar la resolución de las imágenes a $112\times84$ píxeles, los 3715 MB de VRAM de la GTX 1650 Ti resultan insuficientes para alojar las matrices temporales y finales, causando la interrupción prematura del programa.
+
+\subsection{Orquestación con CUDA Streams (Experimento 2)}
+Para superar la limitante de memoria y mejorar el rendimiento, se diseñó una estrategia asíncrona basada en CUDA Streams. Esta aproximación consiste en procesar los datos particionados en múltiples lotes (\textit{batches}). 
+
+Se utilizó memoria paginada bloqueada (\textit{Pinned Memory}) en el host, asignada mediante \texttt{cudaMallocHost}, lo cual permite un acceso directo a la memoria (DMA) por parte del driver de NVIDIA. Las transferencias entre CPU y GPU se ejecutaron utilizando la instrucción \texttt{cudaMemcpyAsync}. De este modo, fue posible orquestar una técnica de \textit{latency hiding} o solapamiento, donde se ocultan los tiempos de transferencia PCI-Express al realizar cómputo en la GPU de manera simultánea al envío y recepción del siguiente y anterior lote de datos.
+
+\section{Evaluación Experimental}
+
+En esta sección se evalúa el rendimiento del algoritmo particionado. Se analizan distintos números de streams $S \in \{1, 2, 4, 8, 16\}$ para la resolución de $112\times84$.
+
+\begin{table}[H]
+    \centering
+    \caption{Tiempos de Ejecución (ms) para distintas configuraciones de Streams}
+    \label{tab:tiempos}
+    \begin{tabular}{ccccc}
+        \toprule
+        \textbf{Streams ($S$)} & \textbf{Copia a GPU} & \textbf{Cómputo} & \textbf{Copia a Host} & \textbf{Tiempo Total} \\
+        \midrule
+        1  & % TODO: Ingrese t_gpu_1  & % TODO: Ingrese t_comp_1 & % TODO: Ingrese t_host_1 & % TODO: Ingrese t_total_1 \\
+        2  & % TODO: Ingrese t_gpu_2  & % TODO: Ingrese t_comp_2 & % TODO: Ingrese t_host_2 & % TODO: Ingrese t_total_2 \\
+        4  & % TODO: Ingrese t_gpu_4  & % TODO: Ingrese t_comp_4 & % TODO: Ingrese t_host_4 & % TODO: Ingrese t_total_4 \\
+        8  & % TODO: Ingrese t_gpu_8  & % TODO: Ingrese t_comp_8 & % TODO: Ingrese t_host_8 & % TODO: Ingrese t_total_8 \\
+        16 & % TODO: Ingrese t_gpu_16 & % TODO: Ingrese t_comp_16 & % TODO: Ingrese t_host_16 & % TODO: Ingrese t_total_16 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    % TODO: Reemplazar 'example-image' por el nombre del archivo de la gráfica (ej. 'speedup.png')
+    % y ajustar el width si es necesario.
+    \includegraphics[width=\linewidth]{example-image}
+    \caption{Gráfico de Speedup en función de la cantidad de streams utilizados.}
+    \label{fig:speedup}
+\end{figure}
+
+Para visualizar de manera más concreta el solapamiento, se utilizó la herramienta de perfilado Nsight Systems (\texttt{nsys}).
+
+\begin{figure}[H]
+    \centering
+    % TODO: Reemplazar 'example-image' por la captura de pantalla de nsys.
+    \includegraphics[width=\linewidth]{example-image}
+    \caption{Perfilado en Nsight Systems demostrando el solapamiento entre la transferencia de datos del Host y el cómputo en la GPU.}
+    \label{fig:nsys}
+\end{figure}
+
+
+\section{Conclusión y Análisis Crítico}
+El desarrollo e implementación de algoritmos en paralelo mediante CUDA requiere de un análisis detallado no solo del problema matemático, sino del hardware subyacente. Los resultados obtenidos muestran que al implementar múltiples streams de ejecución simultáneos se consigue ocultar la latencia de las transferencias a través del bus PCIe. 
+
+% TODO: Analizar por qué el rendimiento dejó de escalar.
+Se observó que, a partir de cierta cantidad de streams (ver Tabla \ref{tab:tiempos}), la mejora en el rendimiento deja de ser significativa. Esto ocurre debido a que la naturaleza de este algoritmo es altamente dependiente del cómputo (\textit{compute-bound}), llegando a ocupar aproximadamente el 99\% del tiempo de ejecución total en operaciones matemáticas dentro de la GPU. Una vez que las latencias de memoria del bus PCIe han sido completamente solapadas (\textit{latency hiding}), la ganancia teórica se estanca y el tiempo total queda dictado estrictamente por la velocidad del reloj de los núcleos CUDA.
+
+Sin embargo, el mayor logro de la orquestación de streams en este proyecto no fue solo el solapamiento de transferencias, sino su uso como técnica de viabilidad para procesamiento \textit{out-of-core}. El enfoque asíncrono demostró ser una solución exitosa para resolver el cálculo de la covarianza de imágenes a una resolución escalada de $112\times84$ sobre un conjunto de datos que superaba la memoria física instalada (3715 MB de VRAM). De esta forma, el fraccionamiento de la carga permitió evadir los límites del dispositivo sin comprometer el resultado matemático final.
+
+\end{document}
