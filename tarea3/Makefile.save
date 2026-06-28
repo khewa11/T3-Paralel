@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────
+# Makefile — Tarea 3 CUDA
+# Adjust CIMG_PATH if CImg.h is not in the same directory
+# ─────────────────────────────────────────────
+
+NVCC     = nvcc
+CFLAGS   = -O2 -std=c++14
+LIBS     = -lpng -lz -ljpeg
+INCLUDES = -I.
+
+# Set your GPU architecture: sm_75 = Turing, sm_86 = Ampere, sm_89 = Ada
+ARCH     = -arch=sm_75
+
+all: experiment1 experiment2
+
+experiment1: experiment1.cu
+	$(NVCC) $(CFLAGS) $(ARCH) $(INCLUDES) -o experiment1 experiment1.cu $(LIBS)
+
+experiment2: experiment2.cu
+	$(NVCC) $(CFLAGS) $(ARCH) $(INCLUDES) -o experiment2 experiment2.cu $(LIBS)
+
+clean:
+	rm -f experiment1 experiment2
+
+# ── Quick benchmark (adjust dataset path and image count) ──────────────
+
+IMAGES  = 100
+TILE    = 16
+
+bench1:
+	./experiment1 $(DATASET) $(IMAGES) $(TILE)
+
+# Run experiment2 with S = 1, 2, 4, 8, 16
+bench2:
+	@echo "=== S=1  ===" && ./experiment2 $(DATASET) $(IMAGES) 1  $(TILE)
+	@echo "=== S=2  ===" && ./experiment2 $(DATASET) $(IMAGES) 2  $(TILE)
+	@echo "=== S=4  ===" && ./experiment2 $(DATASET) $(IMAGES) 4  $(TILE)
+	@echo "=== S=8  ===" && ./experiment2 $(DATASET) $(IMAGES) 8  $(TILE)
+	@echo "=== S=16 ===" && ./experiment2 $(DATASET) $(IMAGES) 16 $(TILE)
+
+# ── Nsight Systems profiling ───────────────────────────────────────────
+profile1:
+	nsys profile --stats=true -o exp1_profile ./experiment1 $(DATASET) $(IMAGES) $(TILE)
+
+profile2:
+	nsys profile --stats=true -o exp2_profile ./experiment2 $(DATASET) $(IMAGES) 4 $(TILE)
