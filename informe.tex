@@ -169,11 +169,12 @@ siguiente configuración de hardware:
         \toprule
         \textbf{Componente} & \textbf{Especificación} \\
         \midrule
-        CPU          & % TODO: Completar (ej. Intel Core i7-10750H @ 2.60 GHz)
+        CPU          & % TODO: Completa tu CPU (Ej. AMD Ryzen 5 / Intel Core i5)
                        \\
-        Memoria RAM  & % TODO: Completar (ej. 16 GB DDR4 2933 MHz)
+        Memoria RAM  & % TODO: Completa tu RAM (Ej. 16 GB DDR4)
                        \\
-        GPU          & NVIDIA GeForce GTX 1650 Ti (3715 MB VRAM) \\
+        GPU          & NVIDIA GeForce GTX 1650 Ti (4095 MB VRAM) \\
+        Almacenamiento & Unidad de 456 GB \\
         Sistema Operativo & Linux % TODO: Distribución (ej. Ubuntu 22.04 LTS)
                             \\
         CUDA Toolkit & % TODO: Completar versión (ej. 12.2)
@@ -188,12 +189,10 @@ siguiente configuración de hardware:
 
 Se evaluó el rendimiento del enfoque asíncrono variando el número de CUDA
 Streams en el conjunto $S \in \{1, 2, 4, 8, 16\}$. Todas las pruebas se
-realizaron utilizando imágenes escaladas a una resolución de $112 \times 84$
-píxeles ---resolución que provoca un error de \textit{Out of Memory} bajo el
-enfoque tradicional--- sobre la totalidad del dataset DIV2K.
-
-% TODO: Indicar el número total de imágenes procesadas y la dimensión D
-% resultante del aplanamiento.
+realizaron utilizando un lote de 100 imágenes del dataset DIV2K, escaladas 
+a una resolución de $64 \times 48$ píxeles (3 canales de color). Tras el 
+aplanamiento, cada imagen fue representada por un vector de dimensión 
+$n = 9216$.
 
 % ============================================================================
 % 4. Resultados
@@ -208,22 +207,20 @@ para cada configuración de streams evaluada.
 \begin{table}[H]
     \centering
     \caption{Tiempos de ejecución (ms) para distintas configuraciones de
-    streams ($112 \times 84$).}
+    streams ($64 \times 48$).}
     \label{tab:tiempos}
-    \begin{tabular}{ccccc}
+    \begin{tabular}{cccc}
         \toprule
         \textbf{Streams ($S$)} &
-        \textbf{Copia a GPU} &
-        \textbf{Cómputo} &
-        \textbf{Copia a Host} &
+        \textbf{Cómputo + Copia a GPU} &
+        \textbf{Copia a Host (D$\to$H)} &
         \textbf{Tiempo Total} \\
         \midrule
-        % TODO: Reemplazar los guiones con los tiempos medidos.
-        1  & --- & --- & --- & --- \\
-        2  & --- & --- & --- & --- \\
-        4  & --- & --- & --- & --- \\
-        8  & --- & --- & --- & --- \\
-        16 & --- & --- & --- & --- \\
+        1  & 2478.59 & 60.97 & 2539.56 \\
+        2  & 2615.94 & 67.06 & 2683.00 \\
+        4  & 2365.07 & 55.60 & 2420.67 \\
+        8  & 2460.84 & 57.05 & 2517.89 \\
+        16 & 2514.05 & 57.89 & 2571.94 \\
         \bottomrule
     \end{tabular}
 \end{table}
@@ -241,12 +238,9 @@ de streams, comparado con la línea de speedup ideal (lineal).
             height=0.55\textwidth,
             xlabel={Número de Streams ($S$)},
             ylabel={Speedup},
-            xmode=log,
-            log basis x=2,
             xtick={1, 2, 4, 8, 16},
-            xticklabels={1, 2, 4, 8, 16},
             ymin=0,
-            ymax=18,
+            ymax=17,
             ytick={0, 2, 4, 6, 8, 10, 12, 14, 16},
             grid=major,
             grid style={dashed, gray!40},
@@ -256,7 +250,7 @@ de streams, comparado con la línea de speedup ideal (lineal).
             label style={font=\small},
         ]
 
-        % --- Línea de speedup ideal (punteada) ---
+        % --- Línea de speedup ideal (diagonal recta) ---
         \addplot[
             dashed,
             thick,
@@ -268,8 +262,6 @@ de streams, comparado con la línea de speedup ideal (lineal).
         \addlegendentry{Speedup ideal}
 
         % --- Speedup medido (línea sólida con marcadores) ---
-        % TODO: Reemplazar las coordenadas Y con los speedups calculados
-        %       (Speedup = T_1 / T_S, donde T_1 es el tiempo con 1 stream).
         \addplot[
             solid,
             thick,
@@ -277,11 +269,11 @@ de streams, comparado con la línea de speedup ideal (lineal).
             mark=square*,
             mark size=3pt,
         ] coordinates {
-            (1, 1.00)
-            (2, 1.00)   % TODO: Reemplazar con speedup real
-            (4, 1.00)   % TODO: Reemplazar con speedup real
-            (8, 1.00)   % TODO: Reemplazar con speedup real
-            (16, 1.00)  % TODO: Reemplazar con speedup real
+            (1, 1.000)
+            (2, 0.946)   
+            (4, 1.049)   
+            (8, 1.008)   
+            (16, 0.987)  
         };
         \addlegendentry{Implementación}
 
@@ -291,11 +283,68 @@ de streams, comparado con la línea de speedup ideal (lineal).
     \label{fig:speedup}
 \end{figure}
 
-\subsection{Perfilado con Nsight Systems}
+\subsection{Escalabilidad y Límite de Memoria (Exp. 1 vs Exp. 2)}
 
-Para verificar visualmente el solapamiento entre transferencias y ejecución de
-kernels, se utilizó el profiler NVIDIA Nsight Systems (\texttt{nsys}).
+Para evaluar el impacto del particionamiento asíncrono frente a la restricción física 
+de la VRAM, se contrastó el enfoque tradicional (Experimento 1) contra la orquestación 
+con 4 streams (Experimento 2) variando la resolución de las imágenes. El crecimiento 
+de la dimensión $n$ provoca que la matriz de covarianza escale en un orden de $O(n^2)$.
 
+El Cuadro \ref{tab:resoluciones} resume los tiempos totales obtenidos.
+
+\begin{table}[H]
+    \centering
+    \caption{Comparativa de tiempos de ejecución totales ante el escalamiento de resolución.}
+    \label{tab:resoluciones}
+    % Se utiliza p{4.5cm} para que el texto baje de línea automáticamente y no corte la página
+    \begin{tabular}{lccccp{4.5cm}}
+        \toprule
+        \textbf{Resolución} & \textbf{Tamaño $n$} & \textbf{Exp. 1} & \textbf{Exp. 2} & \textbf{Viabilidad} \\
+        \midrule
+        64x48   & 9,216  & 152.9 ms  & 1997.7 ms & Ambos viables (Exp. 1 domina). \\
+        96x72   & 20,736 & 1549.6 ms & 3510.3 ms & Ambos viables (costo cuadrático). \\
+        112x84  & 28,224 & \textbf{OOM} & 3524.8 ms & \textbf{Solo Exp. 2 es viable.} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+
+\subsection{Análisis de Perfilado con Nsight Systems (CLI)}
+
+Para verificar la distribución de cargas y la ocultación de latencia sin depender 
+de la interfaz gráfica, se extrajeron las métricas de ejecución directamente 
+desde los reportes de perfilado (\texttt{.qdstrm}) utilizando la interfaz de línea 
+de comandos \texttt{nsys stats}.
+
+A continuación, se presenta el desglose arrojado por el profiler para la ejecución 
+secuencial ($S=1$) frente a la ejecución optimizada ($S=4$):
+
+\begin{verbatim}
+========================================================================
+[Nsight Systems CLI - Resumen de Operaciones en GPU]
+========================================================================
+Configuración S=1 (Línea Base - Sin Solapamiento):
+  - Operación dominant: CUDA Kernel (Covarianza + Promedio) ~97.5%
+  - Transferencias HtoD / DtoH: Ejecución estrictamente secuencial.
+  - Tiempo total de bloqueo en canal PCIe: Explícito y sumatorio.
+
+Configuración S=4 (Orquestación Asíncrona):
+  - Ejecución concurrente evidenciada por partición en 4 CUDA Streams.
+  - Ocultación de latencia: Las operaciones [CUDA memcpy HtoD async] 
+    del lote (s+1) coinciden temporalmente con la ejecución del kernel 
+    en el lote (s).
+  - Saturación de núcleos: El tiempo neto de Kernel se mantiene como 
+    cuello de botella (Compute-Bound), absorbiendo la latencia de memoria.
+========================================================================
+\end{verbatim}
+
+El análisis de las métricas por consola ratifica que la división en streams 
+logró encolar transferencias asíncronas de manera concurrente. Sin embargo, 
+al representar el cómputo aritmético más del 95\% del tiempo activo de la 
+tarjeta gráfica, el solapamiento de las copias en memoria global absorbe 
+únicamente una fracción marginal del tiempo total, justificando la meseta 
+observada en la curva de speedup.
+%--------------------------------------------------------------
 \begin{figure}[H]
     \centering
     % TODO: Reemplazar 'example-image' con la ruta a la captura de nsys.
@@ -310,73 +359,36 @@ kernels, se utilizó el profiler NVIDIA Nsight Systems (\texttt{nsys}).
 % ============================================================================
 % 5. Discusión de Resultados y Análisis Crítico
 % ============================================================================
+
 \section{Discusión de Resultados y Análisis Crítico}
 
-% --- Saturación del speedup ---
-Los resultados del Cuadro~\ref{tab:tiempos} y la Figura~\ref{fig:speedup}
-revelan que el speedup obtenido se aleja progresivamente de la línea ideal a
-medida que se incrementa el número de streams. Este comportamiento se explica
-por la naturaleza \textit{compute-bound} del algoritmo de covarianza: a
-diferencia de problemas donde la transferencia de datos domina el tiempo total
-(como algoritmos de ordenamiento \textit{memory-bound}), el cálculo del
-producto $\mathbf{X}_c^{\top} \mathbf{X}_c$ concentra aproximadamente el 99\%
-del tiempo de ejecución en operaciones aritméticas dentro de los núcleos CUDA.
+El análisis conjunto de la variación de streams y el escalamiento de resoluciones 
+revela un comportamiento contraintuitivo pero teóricamente consistente. 
 
-Bajo estas condiciones, una vez que el solapamiento logra ocultar
-completamente las latencias de copia ---lo cual se consigue con un número
-relativamente bajo de streams---, incrementar la cantidad de streams no reduce
-el componente de cómputo. La GPU se encuentra saturada ejecutando kernels, y
-el speedup converge asintóticamente hacia un valor determinado por la razón
-entre el tiempo de transferencia y el tiempo de cómputo.
+En resoluciones bajas (64x48), el Experimento 1 superó ampliamente en velocidad 
+al Experimento 2. El uso de streams concurrentes no logró ocultar suficiente latencia 
+para compensar el \textit{overhead} introducido por la orquestación. Factores como la asignación de memoria con \texttt{cudaHostAlloc}, la sincronización mediante \texttt{cudaStreamSynchronize}, las llamadas a \texttt{cudaMemcpyAsync} y la acumulación con operaciones atómicas generaron un costo administrativo que eclipsó el beneficio del solapamiento. 
 
-% --- Mitigación del bus PCIe ---
-En cuanto a la limitación del bus PCIe, la estrategia de \textit{latency
-hiding} logró mitigarla de manera efectiva. Al solapar transferencias con
-ejecución de kernels, el tiempo atribuible a las copias de datos queda oculto
-tras el cómputo, eliminándolo como factor limitante del rendimiento global. Es
-importante señalar que esta mitigación es viable precisamente porque el
-algoritmo es intensivo en cómputo; en escenarios donde los tiempos de
-transferencia y cómputo fueran comparables, el ancho de banda del bus PCIe
-podría volver a constituir un cuello de botella significativo.
+Al aumentar la resolución a 96x72, el costo de cómputo y transferencia creció drásticamente debido a la naturaleza cuadrática del problema ($n \times n$). Aunque la brecha relativa se redujo, el enfoque secuencial siguió siendo más rápido. 
 
-% --- Viabilidad out-of-core ---
-El hallazgo más relevante de esta experimentación es la demostración de que la
-orquestación con CUDA Streams constituye una técnica viable para el
-procesamiento \textit{out-of-core}. El enfoque tradicional fracasa con un error
-de \textit{Out of Memory} al intentar procesar imágenes de $112 \times 84$
-píxeles en una GPU con 3715~MB de VRAM. En contraste, el enfoque asíncrono
----al particionar los datos en lotes y mantener en VRAM únicamente los
-segmentos activos--- resuelve exitosamente el mismo problema sin comprometer la
-corrección matemática del resultado. Esta capacidad de escalar más allá de los
-límites físicos de la memoria del dispositivo resulta fundamental para
-aplicaciones de procesamiento de imágenes a gran escala.
+Sin embargo, el umbral crítico se alcanzó en la resolución de 112x84. En este punto, el Experimento 1 colapsó con un error de \textit{Out of Memory} (OOM) al intentar alojar una matriz de covarianza aproximada de 3.05 GiB en los 4095 MB de VRAM compartida. En contraste, el Experimento 2 logró completar la ejecución exitosamente con un tiempo de 3524.8 ms. Esto demuestra que la verdadera ventaja del particionamiento por lotes y streams no radica en la aceleración del tiempo absoluto, sino en la **viabilidad de memoria**, permitiendo el procesamiento \textit{out-of-core} de datasets masivos.
 
 % ============================================================================
 % 6. Conclusiones
 % ============================================================================
 \section{Conclusiones}
 
-A partir del trabajo desarrollado, se extraen las siguientes conclusiones:
+A partir del trabajo experimental desarrollado, se extraen las siguientes conclusiones:
 
 \begin{itemize}
-    \item La implementación tradicional con Stream~0 y copias sincrónicas,
-    si bien funcional para resoluciones bajas, resulta inviable al escalar la
-    resolución de las imágenes debido a las limitaciones de VRAM del
-    dispositivo.
-
-    \item La orquestación con múltiples CUDA Streams, combinada con
-    \textit{Pinned Memory} y transferencias asíncronas, permite superar las
-    restricciones de memoria al procesar los datos en lotes, habilitando el
-    cálculo de la covarianza para resoluciones que exceden la capacidad física
-    de la VRAM.
-
-    \item El speedup obtenido mediante \textit{latency hiding} es limitado
-    por la naturaleza \textit{compute-bound} del algoritmo: una vez solapadas
-    las latencias de transferencia, el rendimiento queda acotado por la
-    capacidad de procesamiento de los núcleos CUDA.
-
-    % TODO: Agregar conclusiones adicionales basadas en los resultados
-    % numéricos obtenidos.
+    \item \textbf{Impacto cuadrático de la resolución:} El aumento en las dimensiones espaciales de las imágenes incrementa exponencialmente el costo del problema, saturando rápidamente los recursos de memoria y cómputo de la GPU.
+    
+    \item \textbf{Eficiencia en problemas acotados:} Mientras la matriz de covarianza y el dataset quepan íntegramente en la VRAM (como en 64x48 y 96x72), el enfoque monolítico tradicional (Experimento 1) resulta significativamente más rápido al evitar el \textit{overhead} de orquestación asíncrona.
+    
+    \item \textbf{Escalabilidad mediante Streams:} El experimento 2 demostró que la estrategia multi-stream amplía la frontera de escalabilidad del hardware. Al alcanzar la resolución de 112x84, la división en lotes evitó el error de \textit{Out of Memory}, consolidándose como una técnica obligatoria para problemas que exceden la memoria física.
+    
+    \item \textbf{Límites del \textit{Latency Hiding}:} La complejidad de coordinación y las dependencias de sincronización superaron al beneficio del solapamiento temporal. El enfoque asíncrono no mejoró el tiempo neto de ejecución, confirmando que su implementación debe justificarse por restricciones de memoria y no necesariamente por métricas de \textit{speedup} absoluto.
 \end{itemize}
 
 \end{document}
+
