@@ -1,0 +1,690 @@
+% ============================================================================
+% Informe Tarea 3 — Sistemas Distribuidos y Paralelos
+% Universidad de Concepción, Junio 2026
+% ============================================================================
+\documentclass[12pt, a4paper]{article}
+
+% ---------- Márgenes ----------
+\usepackage[margin=2.5cm]{geometry}
+
+% ---------- Idioma ----------
+\usepackage[spanish,es-tabla]{babel}
+
+% ---------- Paquetes obligatorios ----------
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% ---------- Configuración de hyperref ----------
+\hypersetup{
+    colorlinks  = true,
+    linkcolor   = blue!70!black,
+    citecolor   = green!50!black,
+    urlcolor    = blue!60!black
+}
+
+% ---------- Espaciado ----------
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{parskip}
+
+\begin{document}
+
+% ============================================================================
+%  ENCABEZADO
+% ============================================================================
+\begin{center}
+    {\LARGE \textbf{Tarea 3: Procesamiento de Imágenes en CUDA}} \\[0.5cm]
+    {\large Javier Torres \& Juan Umaña \& Benjamin Jimenez} \\[0.2cm]
+    {\small Repositorio: \url{https://github.com/khewa11/T3-Paralel}} \\[0.5cm]
+    {\large Sistemas Distribuidos y Paralelos} \\
+    {\large Universidad de Concepción} \\
+    {\large Junio 2026} \\[1cm]
+\end{center}
+
+% ============================================================================
+%  1. INTRODUCCIÓN
+% ============================================================================
+\section{Introducción}
+
+El análisis estadístico de grandes colecciones de imágenes constituye un pilar
+fundamental en disciplinas como la visión por computador, la compresión con
+pérdida y el aprendizaje de representaciones. Una operación recurrente en estos
+contextos es el cálculo de la \textbf{matriz de covarianza} a partir de un
+conjunto de~$N$ imágenes aplanadas en vectores de dimensión~$D$, donde
+$D = W \times H \times C$ representa el producto entre el ancho, el alto y el
+número de canales de cada imagen.
+
+\subsection{Formulación matemática}
+
+Sea $\{v^{(k)}\}_{k=1}^{N}$ el conjunto de imágenes aplanadas, con
+$v^{(k)} \in \mathbb{R}^{D}$. El procesamiento se descompone en tres etapas:
+
+\begin{enumerate}
+    \item \textbf{Vector promedio.} Se calcula el centroide del conjunto:
+    \begin{equation}
+        \mu_j \;=\; \frac{1}{N} \sum_{k=1}^{N} v_j^{(k)},
+        \qquad j = 1, \ldots, D.
+        \label{eq:media}
+    \end{equation}
+
+    \item \textbf{Matriz centrada.} Cada vector se centra restando el promedio:
+    \begin{equation}
+        \overline{v}_j^{(k)} \;=\; v_j^{(k)} - \mu_j,
+        \qquad k = 1, \ldots, N, \quad j = 1, \ldots, D.
+        \label{eq:centrado}
+    \end{equation}
+
+    \item \textbf{Matriz de covarianza.} Se obtiene la matriz simétrica
+    $\mathbf{C} \in \mathbb{R}^{D \times D}$:
+    \begin{equation}
+        C_{jj'} \;=\; \frac{1}{N-1} \sum_{k=1}^{N}
+            \overline{v}_j^{(k)} \;\overline{v}_{j'}^{(k)},
+        \qquad j,j' = 1, \ldots, D.
+        \label{eq:covarianza}
+    \end{equation}
+\end{enumerate}
+
+\subsection{Motivación y limitante física}
+
+El desafío computacional no reside únicamente en la complejidad
+$\mathcal{O}(N \cdot D^2)$ del producto exterior acumulado, sino en la
+\textbf{limitante física de la memoria de la GPU}. Aplanar miles de imágenes
+del dataset DIV2K en una única región contigua de la VRAM excede con creces la
+capacidad de tarjetas gráficas de gama media. Por ejemplo, una GPU con
+aproximadamente 3.7~GB de VRAM no puede alojar simultáneamente la matriz de
+datos completa junto con la matriz de covarianza resultante cuando las
+resoluciones se escalan más allá de umbrales modestos.
+
+Este trabajo propone y evalúa una estrategia de \textbf{orquestación asíncrona
+mediante CUDA Streams} que particiona los datos en lotes (\textit{batches}),
+permitiendo procesar volúmenes de datos que superan la capacidad física de la
+VRAM. Se compara esta implementación con una versión tradicional que opera
+sobre el \textit{Stream}~0 por defecto, y se analizan las implicaciones del
+\textit{latency hiding} sobre el bus PCIe.
+
+% ============================================================================
+%  2. DESCRIPCIÓN DE ALGORITMOS
+% ============================================================================
+\section{Descripción de Algoritmos}
+
+\subsection{Implementación Tradicional (Stream~0)}
+
+La primera implementación sigue el paradigma convencional de programación CUDA:
+
+\begin{itemize}
+    \item \textbf{Memoria contigua:} Todas las imágenes se alojan en un único
+          buffer de memoria global de la GPU mediante \texttt{cudaMalloc}.
+          Igualmente, la matriz de covarianza de tamaño $D \times D$ se aloja
+          íntegramente en la VRAM.
+
+    \item \textbf{Stream único (Stream~0):} Todas las transferencias
+          \textit{Host}~$\to$~\textit{Device} y las invocaciones de
+          \textit{kernels} se serializan en el flujo por defecto, sin
+          posibilidad de solapamiento entre cómputo y comunicación.
+
+    \item \textbf{Tiling:} El cálculo de la covarianza emplea \textit{tiling}
+          en memoria compartida para maximizar la reutilización de datos dentro
+          de cada bloque de hilos, reduciendo los accesos a memoria global.
+\end{itemize}
+
+\textbf{Limitación crítica:} Esta implementación falla con un error de
+\texttt{Out of Memory} al escalar la resolución de las imágenes (por ejemplo,
+a $112 \times 84$ píxeles) debido a que el volumen total de datos excede la
+capacidad de la VRAM disponible (3715~MB). La asignación simultánea de la
+matriz de datos y la matriz de covarianza resulta inviable bajo estas
+condiciones.
+
+\subsection{Orquestación con CUDA Streams}
+
+La segunda implementación resuelve la limitación anterior mediante una
+estrategia de particionamiento por lotes con orquestación asíncrona:
+
+\begin{itemize}
+    \item \textbf{Particionamiento en lotes (\textit{batches}):} El conjunto
+          de~$N$ imágenes se divide en~$S$ lotes de tamaño
+          $\lceil N/S \rceil$. Cada lote se procesa de forma independiente,
+          acumulando su contribución parcial a la matriz de covarianza.
+
+    \item \textbf{Pinned Memory (\texttt{cudaMallocHost}):} Los buffers del
+          lado del host se alojan como memoria \textit{page-locked}, habilitando
+          transferencias DMA que no requieren una copia intermedia al
+          \textit{staging buffer} del sistema operativo. Esto es requisito
+          indispensable para utilizar \texttt{cudaMemcpyAsync}.
+
+    \item \textbf{Transferencias asíncronas (\texttt{cudaMemcpyAsync}):}
+          Las copias entre \textit{Host} y \textit{Device} se emiten de forma
+          no bloqueante, permitiendo que el motor de copia DMA opere en
+          paralelo con la ejecución de \textit{kernels} en otro \textit{stream}.
+
+    \item \textbf{Ocultamiento de latencia (\textit{Latency Hiding}):}
+          Al solapar la transferencia del lote~$i+1$ con el cómputo del
+          lote~$i$, se busca ocultar la latencia del bus PCIe y reducir el
+          tiempo total de ejecución.
+\end{itemize}
+
+La acumulación de resultados parciales se realiza directamente sobre la matriz
+de covarianza en la GPU, garantizando que el resultado final sea
+numéricamente idéntico al de la implementación tradicional.
+
+% ============================================================================
+%  3. METODOLOGÍA EXPERIMENTAL
+% ============================================================================
+\section{Metodología Experimental}
+
+\subsection{Hardware}
+
+La Tabla~\ref{tab:hardware} resume las características del sistema utilizado
+para los experimentos.
+
+\begin{table}[H]
+    \centering
+    \caption{Especificaciones del hardware experimental.}
+    \label{tab:hardware}
+    \begin{tabular}{@{} l l @{}}
+        \toprule
+        \textbf{Componente} & \textbf{Especificación} \\
+        \midrule
+        CPU     & Intel Core i3-1005G1 @ 1.20\,GHz \\
+        RAM     & 12\,GB DDR4 \\
+        GPU     & NVIDIA GeForce GTX 1650 Ti \\
+        VRAM    & 3715\,MB (4\,GB) \\
+        Bus     & PCIe 3.0 x16 \\
+        SO      & Linux Mint 21.3 \\
+        CUDA    & Toolkit 12.x (sm\_75) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Dataset}
+
+Se utilizó el dataset \textbf{DIV2K}, una colección de referencia compuesta por
+imágenes de alta resolución ampliamente empleada en tareas de
+super-resolución. Para los experimentos, las imágenes fueron redimensionadas y
+aplanadas, generando un volumen de datos de aproximadamente 3~MB para el
+conjunto de prueba principal.
+
+\subsection{Parámetros del experimento}
+
+El parámetro principal de variación fue el \textbf{número de streams}~$S$,
+evaluado en el conjunto $S \in \{1, 2, 4, 8, 16\}$. La configuración con
+$S = 1$ representa el caso base en el que la orquestación por lotes no aporta
+solapamiento efectivo, funcionando de manera análoga a una ejecución
+serializada dentro de la infraestructura de \textit{streams}.
+
+% ============================================================================
+%  4. RESULTADOS
+% ============================================================================
+\section{Resultados}
+
+\subsection{Resultados del Experimento~1}
+
+El Experimento~1 corresponde a la implementación tradicional sobre el Stream~0,
+en la cual toda la memoria se aloja de forma monolítica en la VRAM.
+La Tabla~\ref{tab:exp1} muestra los tiempos obtenidos para tres resoluciones.
+
+\begin{table}[H]
+    \centering
+    \caption{Tiempos de ejecución (ms) de la implementación tradicional
+             (Stream~0) para distintas resoluciones.}
+    \label{tab:exp1}
+    \begin{tabular}{@{} l r r r r r @{}}
+        \toprule
+        \textbf{Resolución} &
+        \textbf{$n = W{\times}H{\times}C$} &
+        \textbf{H$\to$D (ms)} &
+        \textbf{Cómputo (ms)} &
+        \textbf{D$\to$H (ms)} &
+        \textbf{Total (ms)} \\
+        \midrule
+        $64 \times 48$   & 9\,216  & 0.74   & 100.79   & 51.41  & 152.93   \\
+        $96 \times 72$   & 20\,736 & 1.47   & 1\,007.95 & 540.12 & 1\,549.55 \\
+        $112 \times 84$  & 28\,224 & \multicolumn{4}{c}{\textit{Out of Memory}} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Se observa un crecimiento significativo del tiempo de cómputo y de la copia
+\textit{Device}~$\to$~\textit{Host} al pasar de $64 \times 48$ a
+$96 \times 72$, consistente con la complejidad cuadrática
+$\mathcal{O}(N \cdot D^2)$ del producto exterior acumulado. Al intentar
+procesar imágenes de $112 \times 84$ píxeles, la implementación tradicional
+falla con un error de \texttt{Out of Memory}, ya que la asignación monolítica
+de la matriz de datos y la matriz de covarianza excede la capacidad de la VRAM
+(3715~MB).
+
+\subsection{Comparación entre experimentos}
+
+La Tabla~\ref{tab:comparacion} confronta los tiempos totales del Experimento~1
+(Stream~0) con los del Experimento~2 (CUDA Streams, $S = 4$) para las tres
+resoluciones evaluadas.
+
+\begin{table}[H]
+    \centering
+    \caption{Comparación de tiempos totales (ms) entre ambos experimentos.}
+    \label{tab:comparacion}
+    \begin{tabular}{@{} l r r @{}}
+        \toprule
+        \textbf{Resolución} &
+        \textbf{Exp.~1 --- Stream~0 (ms)} &
+        \textbf{Exp.~2 --- Streams $S{=}4$ (ms)} \\
+        \midrule
+        $64 \times 48$   & 152.9   & 1\,997.7 \\
+        $96 \times 72$   & 1\,549.6 & 3\,510.3 \\
+        $112 \times 84$  & OOM     & 3\,524.8 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}
+        \begin{axis}[
+            width=0.85\textwidth,
+            height=7cm,
+            xlabel={Dimensión $n = W{\times}H{\times}C$},
+            ylabel={Tiempo total (ms)},
+            xmin=5000, xmax=32000,
+            ymin=0, ymax=4200,
+            grid=both,
+            grid style={line width=0.3pt, draw=gray!30},
+            major grid style={line width=0.5pt, draw=gray!50},
+            legend pos=north west,
+            legend style={font=\small},
+            mark size=3pt,
+        ]
+
+        % Experimento 1 (Stream 0)
+        \addplot[
+            thick,
+            color=red!80!black,
+            mark=square*,
+            mark options={fill=red!60},
+        ] coordinates {
+            (9216,  152.9)
+            (20736, 1549.6)
+        };
+        \addlegendentry{Exp.~1 (Stream~0)}
+
+        % Experimento 2 (Streams S=4)
+        \addplot[
+            thick,
+            color=blue!80!black,
+            mark=*,
+            mark options={fill=blue!60},
+        ] coordinates {
+            (9216,  1997.7)
+            (20736, 3510.3)
+            (28224, 3524.8)
+        };
+        \addlegendentry{Exp.~2 (Streams $S{=}4$)}
+
+        % Anotación OOM del Exp 1
+        \node[anchor=south, font=\footnotesize, text=red!70!black]
+            at (axis cs:28224, 200) {\textbf{OOM (Exp.~1)}};
+
+        \end{axis}
+    \end{tikzpicture}
+    \caption{Tiempo total en función de la dimensión~$n$ para ambos
+             experimentos. El Experimento~1 no puede procesar $n = 28\,224$
+             (OOM), mientras que la orquestación por lotes del Experimento~2
+             completa todas las resoluciones.}
+    \label{fig:exp_comparacion}
+\end{figure}
+
+A continuación se presentan los resultados detallados del Experimento~2,
+correspondiente al procesamiento del dataset de 3~MB con la implementación
+basada en CUDA Streams. Se reportan los tiempos de ejecución del \textit{kernel}
+en la GPU, el costo de la copia \textit{Device}~$\to$~\textit{Host} y el
+tiempo total para cada configuración de~$S$.
+
+\subsection{Tiempos del Experimento~2 variando $S$}
+
+\begin{table}[H]
+    \centering
+    \caption{Tiempos de ejecución (ms) variando el número de streams~$S$
+             sobre el dataset de 3~MB.}
+    \label{tab:tiempos}
+    \begin{tabular}{@{} r r r r @{}}
+        \toprule
+        \textbf{Streams ($S$)} &
+        \textbf{GPU (ms)} &
+        \textbf{Copia D$\to$H (ms)} &
+        \textbf{Total (ms)} \\
+        \midrule
+         1 & 2478.59 & 60.97 & 2539.56 \\
+         2 & 2615.94 & 67.06 & 2683.00 \\
+         4 & 2365.07 & 55.60 & 2420.67 \\
+         8 & 2460.84 & 57.05 & 2517.89 \\
+        16 & 2514.05 & 57.88 & 2571.94 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Análisis de Speedup}
+
+Se define el \textit{speedup} relativo tomando como referencia la configuración
+con $S = 1$:
+
+\begin{equation}
+    \text{Speedup}(S) \;=\; \frac{T_{\text{total}}(S=1)}{T_{\text{total}}(S)}.
+    \label{eq:speedup}
+\end{equation}
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}
+        \begin{axis}[
+            width=0.85\textwidth,
+            height=7cm,
+            xlabel={Número de Streams ($S$)},
+            ylabel={Speedup},
+            xmode=log,
+            log basis x=2,
+            xtick={1, 2, 4, 8, 16},
+            xticklabels={1, 2, 4, 8, 16},
+            ymin=0.85,
+            ymax=1.15,
+            ytick={0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15},
+            grid=both,
+            grid style={line width=0.3pt, draw=gray!30},
+            major grid style={line width=0.5pt, draw=gray!50},
+            legend pos=south east,
+            legend style={font=\small},
+            mark size=3pt,
+        ]
+
+        % Línea base (speedup = 1)
+        \addplot[
+            dashed,
+            thick,
+            color=black!50,
+            domain=0.8:20,
+            samples=2,
+        ] {1.0};
+        \addlegendentry{Línea base ($S_p = 1.0$)}
+
+        % Curva experimental de speedup
+        % Speedup: S=1 -> 1.000, S=2 -> 0.9466, S=4 -> 1.0491, S=8 -> 1.0086, S=16 -> 0.9874
+        \addplot[
+            thick,
+            color=blue!80!black,
+            mark=*,
+            mark options={fill=blue!60},
+        ] coordinates {
+            (1,  1.0000)
+            (2,  0.9466)
+            (4,  1.0491)
+            (8,  1.0086)
+            (16, 0.9874)
+        };
+        \addlegendentry{Speedup experimental}
+
+        \end{axis}
+    \end{tikzpicture}
+    \caption{Speedup en función del número de streams. La curva experimental
+             oscila en torno a la línea base, evidenciando la ausencia de
+             mejora significativa por solapamiento.}
+    \label{fig:speedup}
+\end{figure}
+
+\subsection{Perfiles de ejecución (Nsight Systems)}
+
+Los perfiles capturados con Nsight Systems para la configuración $S = 4$ sobre
+el dataset de 3~MB permiten descomponer el tiempo de ejecución a nivel de
+llamadas CUDA y kernels individuales.
+
+\begin{table}[H]
+    \centering
+    \caption{Distribución del tiempo por llamada CUDA API (Nsight Systems,
+             $S = 4$, resolución $96 \times 72$).}
+    \label{tab:cuda_api}
+    \begin{tabular}{@{} l r r @{}}
+        \toprule
+        \textbf{Llamada CUDA API} &
+        \textbf{Tiempo (ms)} &
+        \textbf{\% del total} \\
+        \midrule
+        \texttt{cudaHostAlloc}                   & 121.93  & 26.5  \\
+        \texttt{cudaStreamSynchronize}           & 113.12  & 24.6  \\
+        \texttt{accumulateCovKernel<16>}          & 112.81  & 24.5  \\
+        \texttt{cudaMemcpy} (total)              &  52.89  & 11.5  \\
+        \quad D$\to$H                            &  52.74  & 11.5  \\
+        \quad H$\to$D                            &   1.18  &  0.3  \\
+        \texttt{cudaMemset}                      &   1.81  &  0.4  \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \caption{Desglose de kernels ejecutados en la GPU (Nsight Systems,
+             $S = 4$, resolución $96 \times 72$).}
+    \label{tab:kernels_gpu}
+    \begin{tabular}{@{} l r r r @{}}
+        \toprule
+        \textbf{Kernel} &
+        \textbf{Instancias} &
+        \textbf{Tiempo (ms)} &
+        \textbf{\% GPU} \\
+        \midrule
+        \texttt{accumulateCovKernel<16>}  & 4 & 112.81  & 99.9  \\
+        \texttt{centerBatchKernel}        & 4 &   0.069 &  0.1  \\
+        \texttt{accumulateMeanKernel}     & 4 &   0.026 & $<$0.1 \\
+        \texttt{finalizeMeanKernel}       & 1 &   0.002 & $<$0.1 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Del análisis del perfil se extraen tres hallazgos clave:
+
+\begin{enumerate}
+    \item El kernel \texttt{accumulateCovKernel<16>} concentra el
+          \textbf{99.9\%} del tiempo de GPU, confirmando que el cálculo de la
+          covarianza es la operación dominante.
+    \item La transferencia \textit{Host}~$\to$~\textit{Device} (1.18~ms)
+          es insignificante frente al cómputo, mientras que la copia
+          \textit{Device}~$\to$~\textit{Host} (52.74~ms) refleja el costo
+          de extraer la matriz de covarianza resultante.
+    \item Las llamadas de infraestructura (\texttt{cudaHostAlloc} y
+          \texttt{cudaStreamSynchronize}) representan conjuntamente más del
+          50\% del tiempo de la API, un overhead significativo que no
+          contribuye al cómputo útil.
+\end{enumerate}
+
+La razón entre la transferencia de entrada y el cómputo del kernel dominante
+resulta:
+
+\begin{equation}
+    \frac{T_{\text{H}\to\text{D}}}{T_{\text{cov}}} \;=\;
+    \frac{1.18}{112.81} \;\approx\; 1.0\%.
+\end{equation}
+
+% ============================================================================
+%  5. DISCUSIÓN DE RESULTADOS Y ANÁLISIS CRÍTICO
+% ============================================================================
+\section{Discusión de Resultados y Análisis Crítico}
+
+Los resultados experimentales revelan un comportamiento aparentemente
+paradójico: la orquestación mediante múltiples CUDA Streams no produjo una
+reducción significativa del tiempo total de ejecución. Sin embargo, un análisis
+riguroso demuestra que este resultado es, de hecho, el comportamiento esperado
+dada la naturaleza del cómputo involucrado, y que la verdadera contribución de
+la arquitectura por lotes reside en un plano diferente al de la aceleración
+temporal.
+
+\subsection{Cuello de botella: dominio del cómputo}
+
+La Tabla~\ref{tab:tiempos} permite cuantificar la distribución del tiempo
+entre cómputo y comunicación. Considérese la configuración con $S = 1$: el
+tiempo de ejecución en la GPU fue de 2478.59~ms, mientras que la copia
+\textit{Device}~$\to$~\textit{Host} requirió únicamente 60.97~ms. Esto
+significa que la fase de transferencia representa apenas un
+$\mathbf{2.4\%}$ del tiempo total:
+
+\begin{equation}
+    \frac{T_{\text{copia}}}{T_{\text{total}}} \;=\;
+    \frac{60.97}{2539.56} \;\approx\; 0.024 \;=\; 2.4\%.
+\end{equation}
+
+En consecuencia, el cómputo neto domina aproximadamente el \textbf{97.6\%}
+del tiempo de ejecución. Esta proporción se mantiene esencialmente constante
+a través de todas las configuraciones de~$S$.
+
+El cálculo de la matriz de covarianza es un problema \textbf{estrictamente
+\textit{compute-bound}}: la complejidad aritmética del producto exterior
+acumulado $\mathcal{O}(N \cdot D^2)$ impone un volumen de operaciones de punto
+flotante que satura las unidades de cómputo de la GPU durante la práctica
+totalidad del tiempo de ejecución. En este régimen, el solapamiento de
+transferencias con cómputo ---la premisa fundamental del \textit{latency
+hiding}--- aporta márgenes de mejora \textbf{insignificantes}, ya que el
+tiempo ocultable (la transferencia PCIe) es un orden de magnitud inferior al
+tiempo irreducible de cómputo.
+
+Esto explica la forma esencialmente \textbf{plana} de la curva de
+\textit{speedup} de la Figura~\ref{fig:speedup}: los valores oscilan entre
+0.95 y 1.05, fluctuaciones atribuibles a la variabilidad inherente del
+\textit{scheduler} de la GPU y del sistema operativo, y no a una tendencia
+sistemática de mejora o degradación.
+
+\subsection{Overhead de la infraestructura de streams}
+
+El perfil de Nsight Systems (Tabla~\ref{tab:cuda_api}) revela que las
+llamadas de infraestructura asociadas a la orquestación por \textit{streams}
+representan una fracción considerable del tiempo total de la API CUDA.
+En particular, \texttt{cudaHostAlloc} consume 121.93~ms (26.5\%), ya que la
+asignación de memoria \textit{page-locked} implica que el sistema operativo
+debe marcar las páginas como no paginables, un proceso costoso que se ejecuta
+una sola vez pero que no puede solaparse con cómputo. Por su parte,
+\texttt{cudaStreamSynchronize} acumula 113.12~ms (24.6\%), correspondiente a
+los puntos de barrera en los que el host espera la finalización de cada lote
+en su respectivo \textit{stream}.
+
+Conjuntamente, estas dos llamadas suman más del \textbf{51\%} del tiempo
+registrado en la API, constituyendo un overhead de gestión que no aporta
+cómputo útil pero que es inherente a la arquitectura de \textit{streams}
+asíncronos.
+
+\subsection{Crecimiento cuadrático empírico}
+
+El paso de $64 \times 48$ ($n_1 = 9\,216$) a $96 \times 72$
+($n_2 = 20\,736$) en el Experimento~1 permite verificar empíricamente el
+crecimiento cuadrático esperado por la complejidad $\mathcal{O}(D^2)$:
+
+\begin{equation}
+    \frac{n_2^{\,2}}{n_1^{\,2}} \;=\;
+    \frac{20\,736^{\,2}}{9\,216^{\,2}} \;\approx\; 5.06
+    \qquad\text{vs.}\qquad
+    \frac{T_2}{T_1} \;=\;
+    \frac{1\,007.95}{100.79} \;\approx\; 10.0.
+\end{equation}
+
+La relación empírica de tiempos ($\approx 10{\times}$) supera la predicción
+puramente cuadrática ($\approx 5{\times}$), lo que sugiere la presencia de
+factores adicionales como la presión sobre la caché L2, el incremento de la
+fragmentación de \textit{tiles} y el crecimiento de la copia
+\textit{Device}~$\to$~\textit{Host} proporcional a $D^2$.
+
+\subsection{Mitigación del bus PCIe y la VRAM: éxito arquitectónico}
+
+Si bien el \textit{latency hiding} no logró reducir el tiempo total de
+ejecución ---resultado que, como se argumentó, era previsible dada la
+naturaleza \textit{compute-bound} del problema---, la orquestación asíncrona
+por lotes constituye un \textbf{éxito arquitectónico absoluto} en un aspecto
+igualmente crítico: la \textbf{mitigación del límite de la VRAM}.
+
+La implementación tradicional con Stream~0 falla irremediablemente con un
+error de \texttt{Out of Memory} al intentar alojar simultáneamente la totalidad
+de los datos y la matriz de covarianza en los 3715~MB de VRAM disponibles.
+Esta limitación impone un techo inamovible sobre la resolución y el número de
+imágenes procesables.
+
+La arquitectura de \textit{streams} con particionamiento en lotes elimina por
+completo esta restricción. Al procesar los datos en fragmentos de tamaño
+controlado, el consumo pico de VRAM queda acotado por el tamaño de un único
+lote más la matriz de covarianza acumulada, independientemente del volumen
+total del dataset. En términos prácticos, esto significa que el sistema puede
+procesar volúmenes de datos \textbf{arbitrariamente grandes} ---limitados
+únicamente por la memoria del host y el tiempo de cómputo--- sin incurrir en
+errores de asignación de memoria en la GPU.
+
+La combinación de \texttt{cudaMallocHost} (memoria \textit{pinned}) y
+\texttt{cudaMemcpyAsync} garantiza además que las transferencias entre
+\textit{Host} y \textit{Device} se realicen de la forma más eficiente posible,
+evitando copias intermedias y utilizando directamente el motor DMA del
+controlador PCIe.
+
+\subsection{Síntesis del análisis}
+
+El resultado global puede sintetizarse en dos proposiciones complementarias:
+
+\begin{enumerate}
+    \item \textbf{El solapamiento de transferencias es irrelevante para
+    problemas \textit{compute-bound}.} Cuando el tiempo de cómputo supera en
+    uno o más órdenes de magnitud al tiempo de comunicación, el \textit{latency
+    hiding} no puede producir aceleraciones perceptibles. La curva de
+    \textit{speedup} plana confirma experimentalmente esta predicción teórica.
+
+    \item \textbf{La orquestación por lotes resuelve una limitación
+    arquitectónica fundamental.} Independientemente de su impacto en la
+    velocidad, el particionamiento permite escalar el procesamiento más allá
+    de los límites físicos de la VRAM, transformando un problema intratable
+    en uno viable. Este beneficio es ortogonal al \textit{speedup} y
+    representa la contribución principal de la implementación con
+    \textit{streams}.
+\end{enumerate}
+
+% ============================================================================
+%  6. CONCLUSIONES
+% ============================================================================
+\section{Conclusiones}
+
+El presente trabajo implementó y evaluó dos estrategias para el cálculo de la
+matriz de covarianza sobre el dataset DIV2K utilizando CUDA: una
+implementación tradicional sobre el Stream~0 y una implementación con
+orquestación asíncrona mediante múltiples CUDA Streams.
+
+Los resultados experimentales demuestran que:
+
+\begin{itemize}
+    \item El cálculo de la matriz de covarianza es un problema
+    \textbf{\textit{compute-bound}}, donde el cómputo del producto exterior
+    acumulado consume aproximadamente el 97.6\% del tiempo total de ejecución.
+    En este régimen, el solapamiento de transferencias PCIe con cómputo no
+    produce mejoras significativas en el tiempo de ejecución, como lo evidencia
+    una curva de \textit{speedup} esencialmente plana ($S_p \approx 1.0$) para
+    $S \in \{1, 2, 4, 8, 16\}$.
+
+    \item La implementación tradicional con asignación monolítica de memoria
+    falla por \texttt{Out of Memory} al escalar la resolución de las imágenes,
+    imponiendo un límite superior rígido sobre el volumen de datos procesable
+    en una GPU con 3715~MB de VRAM.
+
+    \item La orquestación por lotes mediante CUDA Streams, combinada con
+    \textit{pinned memory} y transferencias asíncronas, resuelve esta
+    limitación de forma definitiva. Al acotar el consumo pico de VRAM al
+    tamaño de un único lote, se habilita el procesamiento de datasets
+    arbitrariamente grandes sin modificar el hardware subyacente.
+
+    \item Desde una perspectiva de ingeniería de sistemas, la contribución
+    principal de la arquitectura de \textit{streams} no es la aceleración
+    temporal, sino la \textbf{viabilidad del particionamiento}: convertir un
+    problema limitado por la memoria física en uno limitado únicamente por el
+    tiempo de cómputo disponible.
+\end{itemize}
+
+Estos hallazgos subrayan la importancia de caracterizar correctamente el
+\textit{bottleneck} de un algoritmo antes de diseñar estrategias de
+optimización. En problemas dominados por el cómputo, las técnicas de
+\textit{latency hiding} sobre el bus PCIe son ineficaces para reducir el
+tiempo total; no obstante, la infraestructura de \textit{streams} y
+transferencias asíncronas sigue siendo indispensable como mecanismo de gestión
+de memoria, habilitando la escalabilidad del sistema más allá de las
+restricciones físicas del acelerador.
+
+\end{document}

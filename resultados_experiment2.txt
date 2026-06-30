@@ -1,0 +1,115 @@
+=== S=1 ===
+=== Experiment 2: CUDA Streams (S=1) ===
+Dataset: ./dataset/DIV2K_valid_LR_bicubic/X4  |  Images: 100  |  Streams: 1  |  Tile: 16  |  Resize: 64x48
+
+GPU: NVIDIA GeForce GTX 1650 Ti  VRAM: 4095 MB
+
+Image size: 64×48×3  →  n=9216
+Total dataset: 3 MB
+
+Pass 1: Computing mean with 1 streams...
+Pass 2: Computing covariance with overlap...
+[Time] Total (compute + transfers): 2478.59 ms
+[Time] D→H copy (result):           60.9732 ms
+
+--- Summary (S=1 streams) ---
+  Total GPU time:   2478.59 ms
+  D→H result copy:  60.9732 ms
+  Grand total:      2539.56 ms
+
+C[0..2][0..2] (sanity check):
+    0.086215    0.071139    0.070407
+    0.071139    0.074908    0.067734
+    0.070407    0.067734    0.079678
+=== S=2 ===
+=== Experiment 2: CUDA Streams (S=2) ===
+Dataset: ./dataset/DIV2K_valid_LR_bicubic/X4  |  Images: 100  |  Streams: 2  |  Tile: 16  |  Resize: 64x48
+
+GPU: NVIDIA GeForce GTX 1650 Ti  VRAM: 4095 MB
+
+Image size: 64×48×3  →  n=9216
+Total dataset: 3 MB
+
+Pass 1: Computing mean with 2 streams...
+Pass 2: Computing covariance with overlap...
+[Time] Total (compute + transfers): 2615.94 ms
+[Time] D→H copy (result):           67.0591 ms
+
+--- Summary (S=2 streams) ---
+  Total GPU time:   2615.94 ms
+  D→H result copy:  67.0591 ms
+  Grand total:      2683 ms
+
+C[0..2][0..2] (sanity check):
+    0.086215    0.071139    0.070407
+    0.071139    0.074908    0.067734
+    0.070407    0.067734    0.079678
+=== S=4 ===
+=== Experiment 2: CUDA Streams (S=4) ===
+Dataset: ./dataset/DIV2K_valid_LR_bicubic/X4  |  Images: 100  |  Streams: 4  |  Tile: 16  |  Resize: 64x48
+
+GPU: NVIDIA GeForce GTX 1650 Ti  VRAM: 4095 MB
+
+Image size: 64×48×3  →  n=9216
+Total dataset: 3 MB
+
+Pass 1: Computing mean with 4 streams...
+Pass 2: Computing covariance with overlap...
+[Time] Total (compute + transfers): 2365.07 ms
+[Time] D→H copy (result):           55.5981 ms
+
+--- Summary (S=4 streams) ---
+  Total GPU time:   2365.07 ms
+  D→H result copy:  55.5981 ms
+  Grand total:      2420.67 ms
+
+C[0..2][0..2] (sanity check):
+    0.086215    0.071139    0.070407
+    0.071139    0.074908    0.067734
+    0.070407    0.067734    0.079678
+=== S=8 ===
+=== Experiment 2: CUDA Streams (S=8) ===
+Dataset: ./dataset/DIV2K_valid_LR_bicubic/X4  |  Images: 100  |  Streams: 8  |  Tile: 16  |  Resize: 64x48
+
+GPU: NVIDIA GeForce GTX 1650 Ti  VRAM: 4095 MB
+
+Image size: 64×48×3  →  n=9216
+Total dataset: 3 MB
+
+Pass 1: Computing mean with 8 streams...
+Pass 2: Computing covariance with overlap...
+[Time] Total (compute + transfers): 2460.84 ms
+[Time] D→H copy (result):           57.0545 ms
+
+--- Summary (S=8 streams) ---
+  Total GPU time:   2460.84 ms
+  D→H result copy:  57.0545 ms
+  Grand total:      2517.89 ms
+
+C[0..2][0..2] (sanity check):
+    0.086215    0.071139    0.070407
+    0.071139    0.074908    0.067734
+    0.070407    0.067734    0.079678
+=== S=16 ===
+=== Experiment 2: CUDA Streams (S=16) ===
+Dataset: ./dataset/DIV2K_valid_LR_bicubic/X4  |  Images: 100  |  Streams: 16  |  Tile: 16  |  Resize: 64x48
+
+GPU: NVIDIA GeForce GTX 1650 Ti  VRAM: 4095 MB
+
+Image size: 64×48×3  →  n=9216
+Total dataset: 3 MB
+
+Pass 1: Computing mean with 16 streams...
+Pass 2: Computing covariance with overlap...
+[Time] Total (compute + transfers): 2514.05 ms
+[Time] D→H copy (result):           57.8884 ms
+
+--- Summary (S=16 streams) ---
+  Total GPU time:   2514.05 ms
+  D→H result copy:  57.8884 ms
+  Grand total:      2571.94 ms
+
+C[0..2][0..2] (sanity check):
+    0.086215    0.071139    0.070407
+    0.071139    0.074908    0.067734
+    0.070407    0.067734    0.079678
